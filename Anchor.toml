@@ -5,10 +5,10 @@
 anchor_version = "1.1.2"
 
 [programs.localnet]
-vow = "5mpkktrSk4GCnPWQtzJQZMfb2JDqA2X9Q5CT96JuoxTJ"
+vow = "3B7936bNMDnFP4no8B9hjqVWrpVwssgH473N3wruUkSD"
 
 [programs.devnet]
-vow = "5mpkktrSk4GCnPWQtzJQZMfb2JDqA2X9Q5CT96JuoxTJ"
+vow = "3B7936bNMDnFP4no8B9hjqVWrpVwssgH473N3wruUkSD"
 
 [provider]
 cluster = "localnet"

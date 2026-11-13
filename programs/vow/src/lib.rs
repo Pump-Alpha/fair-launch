@@ -30,7 +30,7 @@ use anchor_spl::{
 
 // Placeholder program ID. `anchor keys sync` replaces it with the ID of the program keypair that
 // `anchor build` generates (kept in target/deploy/, which is gitignored).
-declare_id!("5mpkktrSk4GCnPWQtzJQZMfb2JDqA2X9Q5CT96JuoxTJ");
+declare_id!("3B7936bNMDnFP4no8B9hjqVWrpVwssgH473N3wruUkSD");
 
 /// Shortest lock allowed. Kept at one minute so a live demo can show both the refusal and the
 /// release; a real launchpad would ask for days or months.
