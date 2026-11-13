@@ -40,6 +40,8 @@ fn setup(token_program: Pubkey) -> Setup {
         "target/deploy/vow.so not found: run `anchor build` before `cargo test`"
     );
     svm.add_program_from_file(vow::ID, so).unwrap();
+    // LiteSVM's clock starts at 0. Start at a realistic time (Jan 2027) so times read like real ones.
+    warp_to(&mut svm, 1_800_000_000);
 
     let creator = Keypair::new();
     svm.airdrop(&creator.pubkey(), 10_000_000_000).unwrap();

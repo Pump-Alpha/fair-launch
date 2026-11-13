@@ -211,7 +211,7 @@ function pct(part: bigint, whole: bigint): string {
 
 function renderBadge(mint: Mint, program: PublicKey, vows: Vow[]): string {
   const now = nowUnix();
-  const active = vows.filter((v) => v.releasedAt === 0);
+  const active = vows.filter((v) => remaining(v) > 0n);
   // "Still locked" = in a vault and not yet unlocked: taking it out now would burn half.
   const lockedOf = (v: Vow) => remaining(v) - freeNow(v, now);
   const lockedNow = active.reduce((n, v) => n + lockedOf(v), 0n);
@@ -240,7 +240,7 @@ function renderBadge(mint: Mint, program: PublicKey, vows: Vow[]): string {
   const rows = vows
     .map((v) => {
       const unlocked = vested(v.amount, v.createdAt, v.unlockAt, now);
-      const status = v.releasedAt ? `all out ${escape(when(v.releasedAt))}` : countdown(v.unlockAt);
+      const status = remaining(v) === 0n ? `all out ${escape(when(v.releasedAt))}` : countdown(v.unlockAt);
       return `<tr><td><a href="${explorer("address", v.address.toBase58())}" target="_blank" rel="noopener">${short(v.address)}</a></td>
         <td>${formatTokens(v.amount, mint.decimals)} (${sharePercent(v.amount, v.supplyAtLock)}%)</td>
         <td>${escape(when(v.createdAt))} → ${escape(when(v.unlockAt))}<br/><span class="muted">${pct(unlocked, v.amount)}% unlocked · ${status}</span></td>
@@ -348,14 +348,14 @@ async function renderMine() {
       .map((v, i) => {
         const d = facts[i].decimals;
         const key = v.address.toBase58();
-        const action = v.releasedAt
+        const action = remaining(v) === 0n
           ? `all taken out`
           : `<div class="withdraw"><input data-amount="${i}" inputmode="decimal" value="${escape(typed.get(key) ?? formatTokens(freeNow(v, now), d).replace(/,/g, ""))}" />
              <button data-withdraw="${i}">Withdraw</button>
              <button class="secondary" data-all="${i}" title="Fill in everything left">All</button></div>
              <div class="muted" data-quote="${i}"></div>`;
         return `<tr><td><code>${short(v.mint)}</code></td><td>${formatTokens(remaining(v), d)}</td><td>${formatTokens(freeNow(v, now), d)}</td>
-          <td>${escape(when(v.unlockAt))}<br/><span class="muted">${v.releasedAt ? "" : countdown(v.unlockAt)}</span></td><td>${action}</td></tr>`;
+          <td>${escape(when(v.unlockAt))}<br/><span class="muted">${remaining(v) === 0n ? "" : countdown(v.unlockAt)}</span></td><td>${action}</td></tr>`;
       })
       .join("")}</tbody></table></div><div id="mine-msg"></div>`;
     vows.forEach((v, i) => {

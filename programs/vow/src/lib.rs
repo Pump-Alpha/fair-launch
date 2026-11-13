@@ -306,7 +306,8 @@ pub struct Vow {
     /// Vesting runs evenly from `created_at` to `unlock_at`.
     pub created_at: i64,
     pub unlock_at: i64,
-    /// 0 while tokens remain in the vault; the time of the last withdrawal afterwards.
+    /// 0 while tokens remain in the vault; the time of the last withdrawal afterwards. To tell
+    /// whether a vow is finished, compare `withdrawn + burned` with `amount`.
     pub released_at: i64,
     /// Tokens sent back to the locker so far.
     pub withdrawn: u64,
@@ -407,10 +408,12 @@ pub struct Split {
 /// what counts as "taken" includes what was burned, so nothing new is free until the schedule
 /// catches up with everything taken so far.
 pub fn plan_withdraw(vow: &Vow, now: i64, amount: u64) -> Result<Split> {
-    require!(vow.released_at == 0, VowError::AlreadyReleased);
-    require!(amount > 0, VowError::ZeroAmount);
+    // "All out" is judged by the counts, not by `released_at`, which would be 0 if the clock
+    // ever read 0 (it does in tests).
     let taken = vow.withdrawn + vow.burned;
     let left = vow.amount - taken;
+    require!(left > 0, VowError::AlreadyReleased);
+    require!(amount > 0, VowError::ZeroAmount);
     require!(amount <= left, VowError::MoreThanLeft);
 
     let free = vested(vow.amount, vow.created_at, vow.unlock_at, now).saturating_sub(taken);
