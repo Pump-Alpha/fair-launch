@@ -32,8 +32,8 @@ Out of scope: mainnet, real funds, and any list or label of real wallets.
 ## Status
 
 - Day 1 (2026-11-12): repo, plan and setup.
-- Day 2 (2026-11-13): vow program (`programs/vow`) with unit tests and end-to-end tests. Not yet
-  deployed to devnet.
+- Day 2 (2026-11-13): vow program (`programs/vow`) with unit tests and end-to-end tests; badge
+  page (`app/`). Not yet deployed to devnet.
 
 ## Setup, build and test
 
@@ -45,6 +45,23 @@ anchor keys sync      # first time only: writes that keypair's program ID into t
 anchor build          # rebuild with the right ID
 cargo test -p vow     # unit tests + end-to-end tests on LiteSVM (an in-memory Solana)
 ```
+
+## Badge page (`app/`)
+
+A web page that talks to the program from the browser: check any token's vows (share of supply
+locked, unlock dates, who locked it, whether minting and freezing are still possible), connect
+Phantom and make a vow, release your own vows (or "try to withdraw now", which asks the network to
+simulate the release and shows the program refusing it), and launch a test token in one click.
+
+```sh
+cd app
+npm install
+npm test        # checks the hand-written client against the Rust program's layouts
+npm run dev     # opens the page at http://localhost:5173
+```
+
+Pick Devnet or Localnet at the top. For Localnet, run `solana-test-validator` and deploy the
+program to it first (`anchor deploy --provider.cluster localnet`).
 
 ## How it works
 

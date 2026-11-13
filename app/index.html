@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fair Launch Vow</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <h1>Fair Launch Vow</h1>
+        <p class="tag">Creators lock their own supply on chain. Anyone can check.</p>
+      </div>
+      <div class="bar">
+        <label>Network
+          <select id="cluster">
+            <option value="devnet">Devnet</option>
+            <option value="localnet">Localnet (127.0.0.1:8899)</option>
+          </select>
+        </label>
+        <button id="connect">Connect Phantom</button>
+        <span id="wallet" class="muted"></span>
+      </div>
+    </header>
+
+    <main>
+      <section class="card" id="check">
+        <h2>Check a token</h2>
+        <form id="check-form" class="row">
+          <input id="check-mint" placeholder="Token (mint) address" autocomplete="off" spellcheck="false" />
+          <button type="submit">Check</button>
+        </form>
+        <div id="check-result"></div>
+      </section>
+
+      <section class="card" id="make">
+        <h2>Make a vow</h2>
+        <p class="muted">Lock part of a token's supply until a date. Nobody, including you, can move it out early.</p>
+        <form id="make-form" class="grid">
+          <label>Token (mint) address<input id="make-mint" autocomplete="off" spellcheck="false" /></label>
+          <label>Amount to lock (tokens)<input id="make-amount" type="number" min="0" step="any" /></label>
+          <label>Unlock at<input id="make-unlock" type="datetime-local" /></label>
+          <div class="quick">
+            <span class="muted">Quick:</span>
+            <button type="button" data-minutes="2">+2 min (demo)</button>
+            <button type="button" data-minutes="1440">+1 day</button>
+            <button type="button" data-minutes="43200">+30 days</button>
+          </div>
+          <button type="submit" id="make-submit">Lock tokens</button>
+        </form>
+        <div id="make-result"></div>
+      </section>
+
+      <section class="card" id="mine">
+        <h2>My vows</h2>
+        <div id="mine-result" class="muted">Connect a wallet to see your vows.</div>
+      </section>
+
+      <section class="card" id="demo">
+        <h2>Demo: launch a test token</h2>
+        <p class="muted">Creates a token with 1,000,000 supply in your wallet, so you can try a vow end to end. Test networks only.</p>
+        <div class="row">
+          <button id="launch">Launch test token</button>
+          <button id="revoke" disabled>Revoke mint authority</button>
+        </div>
+        <div id="demo-result"></div>
+      </section>
+    </main>
+
+    <footer class="muted">
+      Program <code id="program-id"></code> · test networks only · not audited
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
