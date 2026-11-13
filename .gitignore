@@ -1,0 +1,27 @@
+# Keys and wallets: never commit any keypair, seed phrase or secret, even devnet ones.
+*.json.key
+id.json
+*keypair*.json
+*-keypair.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Anchor / Rust build output (deploy/ holds program keypairs)
+target/
+.anchor/
+test-ledger/
+
+# Node
+node_modules/
+dist/
+.next/
+.vercel/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+*.log
