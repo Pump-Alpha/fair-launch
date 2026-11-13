@@ -1,0 +1,19 @@
+# Anchor workspace settings. `anchor keys sync` rewrites the program IDs below (and declare_id! in
+# programs/vow/src/lib.rs) to match the program keypair `anchor build` creates in target/deploy/.
+
+[toolchain]
+anchor_version = "1.1.2"
+
+[programs.localnet]
+vow = "5mpkktrSk4GCnPWQtzJQZMfb2JDqA2X9Q5CT96JuoxTJ"
+
+[programs.devnet]
+vow = "5mpkktrSk4GCnPWQtzJQZMfb2JDqA2X9Q5CT96JuoxTJ"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+# Tests run on LiteSVM (an in-memory Solana), so they need no validator and no SOL.
+test = "cargo test -p vow"

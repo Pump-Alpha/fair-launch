@@ -31,15 +31,61 @@ Out of scope: mainnet, real funds, and any list or label of real wallets.
 
 ## Status
 
-Day 1 (2026-11-12): repo created, plan and setup written. No program code yet.
+- Day 1 (2026-11-12): repo, plan and setup.
+- Day 2 (2026-11-13): vow program (`programs/vow`) with unit tests and end-to-end tests. Not yet
+  deployed to devnet.
 
-## Setup
+## Setup, build and test
 
-See [docs/SETUP.md](docs/SETUP.md).
+Install the tools: [docs/SETUP.md](docs/SETUP.md). Then, in this folder:
+
+```sh
+anchor build          # compiles the program; first run creates target/deploy/vow-keypair.json
+anchor keys sync      # first time only: writes that keypair's program ID into the code
+anchor build          # rebuild with the right ID
+cargo test -p vow     # unit tests + end-to-end tests on LiteSVM (an in-memory Solana)
+```
+
+## How it works
+
+```
+creator wallet ──create_vow(nonce, amount, unlock_at)──▶ vow program
+      │                                                     │ writes
+      │ tokens ──────────────────────────────────────▶ vault (token account owned by the vow PDA)
+      │                                                     │
+      │◀──────── release_vow() after unlock_at ─────────────┘ tokens back, vault closed,
+                                                              vow record kept, marked released
+```
+
+- **Vow record** (a PDA at seeds `["vow", mint, locker, nonce]`): mint, locker, nonce, amount,
+  supply at lock, created / unlock / released times, whether the locker was the mint authority.
+  `mint` is at byte offset 8 and `locker` at 40, so a page can fetch every vow on a token with one
+  `getProgramAccounts` memcmp filter.
+- **Vault**: the vow PDA's associated token account. Only the program can sign for the PDA, and it
+  only does so in `release_vow`, after the unlock time, back to the locker.
+- **Token programs**: classic SPL Token and Token-2022.
+- **No admin**: there is no instruction that lets anyone, including us, move locked tokens early.
 
 ## Economic design and risk assumptions
 
-To be written as the program takes shape (required for the DeFi track).
+*Draft; to be finished before submission.*
+
+- **What a vow proves**: that a set amount of supply cannot be sold before a date. It does not
+  prove the creator holds nothing else: they may keep other tokens in other wallets. The badge
+  shows locked share of supply, not "the creator's whole stake".
+- **Who locked it**: anyone can lock tokens they hold. The record says whether the locker was the
+  token's mint authority at the time; the badge must show that, so a stranger's vow can't pose as
+  the creator's.
+- **Dilution**: if the mint authority isn't revoked, the creator could mint more and shrink the
+  locked share. The badge should read the mint live and show whether minting is still possible.
+- **Dangerous Token-2022 extensions are refused**: permanent delegate (could pull tokens out of the
+  vault), transfer hook, default frozen accounts, transfer fees, non-transferable and the rest.
+  Only metadata, group and mint-close-authority extensions are allowed.
+- **Freeze authority**: a mint with a freeze authority could freeze the vault. That only keeps the
+  tokens locked longer (it hurts the creator, not buyers), but the badge should show it.
+- **Lock limits**: 60 seconds to 10 years. One minute is for demos; a launchpad using vows would
+  set its own minimum (e.g. 30 days).
+- **Not audited.** Devnet only.
 
 ## Program IDs
 
