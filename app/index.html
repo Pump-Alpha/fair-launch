@@ -10,7 +10,7 @@
     <header>
       <div class="brand">
         <h1>Fair Launch Vow</h1>
-        <p class="tag">Creators lock their own supply on chain. Anyone can check.</p>
+        <p class="tag">Creators vow their own supply on chain: it unlocks gradually, and dumping it early burns half. Anyone can check.</p>
       </div>
       <div class="bar">
         <label>Network
@@ -36,18 +36,18 @@
 
       <section class="card" id="make">
         <h2>Make a vow</h2>
-        <p class="muted">Lock part of a token's supply until a date. Nobody, including you, can move it out early.</p>
+        <p class="muted">Put part of a token's supply in a vow. It unlocks evenly from now until the date you pick, and you can take out what has unlocked at any time. Taking out more than that is allowed, but the program burns half of the early part. Nobody, including us, can change that.</p>
         <form id="make-form" class="grid">
           <label>Token (mint) address<input id="make-mint" autocomplete="off" spellcheck="false" /></label>
-          <label>Amount to lock (tokens)<input id="make-amount" type="number" min="0" step="any" /></label>
-          <label>Unlock at<input id="make-unlock" type="datetime-local" /></label>
+          <label>Amount to vow (tokens)<input id="make-amount" type="number" min="0" step="any" /></label>
+          <label>Fully unlocked at<input id="make-unlock" type="datetime-local" /></label>
           <div class="quick">
             <span class="muted">Quick:</span>
             <button type="button" data-minutes="2">+2 min (demo)</button>
             <button type="button" data-minutes="1440">+1 day</button>
             <button type="button" data-minutes="43200">+30 days</button>
           </div>
-          <button type="submit" id="make-submit">Lock tokens</button>
+          <button type="submit" id="make-submit">Make the vow</button>
         </form>
         <div id="make-result"></div>
       </section>

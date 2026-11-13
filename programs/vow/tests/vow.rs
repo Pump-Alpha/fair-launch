@@ -1,6 +1,7 @@
 //! End-to-end tests of the vow program on LiteSVM, a fast in-memory Solana.
 //!
-//! These load the compiled program from `target/deploy/vow.so`, so run `anchor build` first, then
+//! The vow unlocks evenly over time; taking out more than has unlocked burns half of the early
+//! part. These load the compiled program from `target/deploy/vow.so`, so run `anchor build` first, then
 //! `cargo test -p vow` (or `anchor test`). Each test runs for both token programs: classic SPL
 //! Token and Token-2022.
 
@@ -8,7 +9,7 @@ use anchor_lang::{InstructionData, ToAccountMetas};
 use litesvm::LiteSVM;
 use litesvm_token::{
     get_spl_account,
-    spl_token::state::Account as TokenAccountState,
+    spl_token::state::{Account as TokenAccountState, Mint as MintState},
     CreateAssociatedTokenAccount, CreateMint, MintTo,
 };
 use solana_clock::Clock;
@@ -39,6 +40,8 @@ fn setup(token_program: Pubkey) -> Setup {
         "target/deploy/vow.so not found: run `anchor build` before `cargo test`"
     );
     svm.add_program_from_file(vow::ID, so).unwrap();
+    // LiteSVM's clock starts at 0. Start at a realistic time (Jan 2027) so times read like real ones.
+    warp_to(&mut svm, 1_800_000_000);
 
     let creator = Keypair::new();
     svm.airdrop(&creator.pubkey(), 10_000_000_000).unwrap();
@@ -116,10 +119,10 @@ fn create_ix(s: &Setup, locker: &Pubkey, locker_tokens: Pubkey, nonce: u64, amou
     }
 }
 
-fn release_ix(s: &Setup, locker: &Pubkey, locker_tokens: Pubkey, vow: Pubkey) -> Instruction {
+fn withdraw_ix(s: &Setup, locker: &Pubkey, locker_tokens: Pubkey, vow: Pubkey, amount: u64, max_burn: u64) -> Instruction {
     Instruction {
         program_id: vow::ID,
-        accounts: vow::accounts::ReleaseVow {
+        accounts: vow::accounts::Withdraw {
             locker: *locker,
             mint: s.mint,
             locker_tokens,
@@ -128,12 +131,16 @@ fn release_ix(s: &Setup, locker: &Pubkey, locker_tokens: Pubkey, vow: Pubkey) ->
             token_program: s.token_program,
         }
         .to_account_metas(None),
-        data: vow::instruction::ReleaseVow {}.data(),
+        data: vow::instruction::Withdraw { amount, max_burn }.data(),
     }
 }
 
 fn balance(svm: &LiteSVM, account: &Pubkey) -> u64 {
     get_spl_account::<TokenAccountState>(svm, account).unwrap().amount
+}
+
+fn supply(svm: &LiteSVM, mint: &Pubkey) -> u64 {
+    get_spl_account::<MintState>(svm, mint).unwrap().supply
 }
 
 fn read_vow(svm: &LiteSVM, address: &Pubkey) -> vow::Vow {
@@ -145,40 +152,64 @@ fn read_vow(svm: &LiteSVM, address: &Pubkey) -> vow::Vow {
 fn full_life_cycle(token_program: Pubkey) {
     let mut s = setup(token_program);
     let creator = s.creator.insecure_clone();
+    let me = creator.pubkey();
     let start = now(&s.svm);
-    let unlock_at = start + 3_600;
+    let unlock_at = start + 1_000; // vests evenly over 1,000 seconds
 
-    send(create_ix(&s, &creator.pubkey(), s.creator_tokens, 0, LOCKED, unlock_at), &mut s.svm, &creator)
+    send(create_ix(&s, &me, s.creator_tokens, 0, LOCKED, unlock_at), &mut s.svm, &creator)
         .expect("create_vow");
 
-    let vow = vow_address(&s.mint, &creator.pubkey(), 0);
+    let vow = vow_address(&s.mint, &me, 0);
     let vault = ata(&vow, &s.mint, &s.token_program);
     assert_eq!(balance(&s.svm, &vault), LOCKED);
     assert_eq!(balance(&s.svm, &s.creator_tokens), SUPPLY - LOCKED);
 
     let record = read_vow(&s.svm, &vow);
     assert_eq!(record.mint, s.mint);
-    assert_eq!(record.locker, creator.pubkey());
+    assert_eq!(record.locker, me);
     assert_eq!(record.amount, LOCKED);
     assert_eq!(record.supply_at_lock, SUPPLY);
+    assert_eq!(record.created_at, start);
     assert_eq!(record.unlock_at, unlock_at);
     assert_eq!(record.released_at, 0);
+    assert_eq!(record.penalty_bps, vow::EARLY_EXIT_PENALTY_BPS);
     assert!(record.locker_is_mint_authority, "creator made the mint, so is its authority");
 
-    // One second before the unlock time: refused.
-    warp_to(&mut s.svm, unlock_at - 1);
-    let err = send(release_ix(&s, &creator.pubkey(), s.creator_tokens, vow), &mut s.svm, &creator)
-        .expect_err("early release must fail");
-    assert!(err.contains("VowStillLocked"), "{err}");
-    assert_eq!(balance(&s.svm, &vault), LOCKED);
+    // At 20%, the unlocked fifth comes out whole.
+    let fifth = LOCKED / 5;
+    warp_to(&mut s.svm, start + 200);
+    send(withdraw_ix(&s, &me, s.creator_tokens, vow, fifth, 0), &mut s.svm, &creator)
+        .expect("withdraw the unlocked part");
+    assert_eq!(balance(&s.svm, &s.creator_tokens), SUPPLY - LOCKED + fifth);
+    assert_eq!(supply(&s.svm, &s.mint), SUPPLY, "nothing burned");
 
-    // At the unlock time: tokens come back, vault closes, record stays and says released.
+    // Asking for more without agreeing to a burn is refused, and nothing moves.
+    s.svm.expire_blockhash(); // same instruction as above: a new blockhash keeps it a new transaction
+    let err = send(withdraw_ix(&s, &me, s.creator_tokens, vow, fifth, 0), &mut s.svm, &creator)
+        .expect_err("early withdrawal without max_burn must fail");
+    assert!(err.contains("BurnAboveLimit"), "{err}");
+    assert_eq!(balance(&s.svm, &vault), LOCKED - fifth);
+
+    // Agreeing to the burn: still at 20%, so this fifth is all early and half of it burns.
+    send(withdraw_ix(&s, &me, s.creator_tokens, vow, fifth, fifth / 2), &mut s.svm, &creator)
+        .expect("early withdrawal");
+    assert_eq!(balance(&s.svm, &s.creator_tokens), SUPPLY - LOCKED + fifth + fifth / 2);
+    assert_eq!(supply(&s.svm, &s.mint), SUPPLY - fifth / 2, "half the early part burned");
+    assert_eq!(balance(&s.svm, &vault), LOCKED - 2 * fifth);
+    let record = read_vow(&s.svm, &vow);
+    assert_eq!(record.withdrawn, fifth + fifth / 2);
+    assert_eq!(record.burned, fifth / 2);
+
+    // At the end the rest comes out whole, the vault closes and the record stays.
     warp_to(&mut s.svm, unlock_at);
-    send(release_ix(&s, &creator.pubkey(), s.creator_tokens, vow), &mut s.svm, &creator)
-        .expect("release_vow");
-    assert_eq!(balance(&s.svm, &s.creator_tokens), SUPPLY);
+    let rest = LOCKED - 2 * fifth;
+    send(withdraw_ix(&s, &me, s.creator_tokens, vow, rest, 0), &mut s.svm, &creator)
+        .expect("withdraw the rest");
+    assert_eq!(balance(&s.svm, &s.creator_tokens), SUPPLY - fifth / 2);
     assert!(s.svm.get_account(&vault).map_or(true, |a| a.lamports == 0), "vault closed");
-    assert_eq!(read_vow(&s.svm, &vow).released_at, unlock_at);
+    let record = read_vow(&s.svm, &vow);
+    assert_eq!(record.released_at, unlock_at);
+    assert_eq!(record.withdrawn + record.burned, LOCKED);
 }
 
 #[test]
@@ -202,7 +233,24 @@ fn lock_shorter_than_a_minute_is_refused() {
 }
 
 #[test]
-fn someone_else_cannot_release() {
+fn dumping_everything_at_once_burns_half() {
+    let mut s = setup(TOKEN_2022);
+    let creator = s.creator.insecure_clone();
+    let me = creator.pubkey();
+    let unlock_at = now(&s.svm) + 30 * 24 * 60 * 60;
+    send(create_ix(&s, &me, s.creator_tokens, 0, LOCKED, unlock_at), &mut s.svm, &creator)
+        .expect("create_vow");
+    let vow = vow_address(&s.mint, &me, 0);
+    // Right away (same second): nothing has unlocked, so all of it is early.
+    send(withdraw_ix(&s, &me, s.creator_tokens, vow, LOCKED, LOCKED), &mut s.svm, &creator)
+        .expect("dump");
+    assert_eq!(balance(&s.svm, &s.creator_tokens), SUPPLY - LOCKED / 2);
+    assert_eq!(supply(&s.svm, &s.mint), SUPPLY - LOCKED / 2);
+    assert!(read_vow(&s.svm, &vow).released_at > 0);
+}
+
+#[test]
+fn someone_else_cannot_withdraw() {
     let mut s = setup(TOKEN);
     let creator = s.creator.insecure_clone();
     let unlock_at = now(&s.svm) + 120;
@@ -219,8 +267,8 @@ fn someone_else_cannot_release() {
         .token_program_id(&TOKEN)
         .send()
         .unwrap();
-    let err = send(release_ix(&s, &stranger.pubkey(), stranger_tokens, vow), &mut s.svm, &stranger)
-        .expect_err("stranger must not release");
+    let err = send(withdraw_ix(&s, &stranger.pubkey(), stranger_tokens, vow, LOCKED, LOCKED), &mut s.svm, &stranger)
+        .expect_err("stranger must not withdraw");
     assert!(err.contains("NotLocker") || err.contains("ConstraintHasOne"), "{err}");
     assert_eq!(balance(&s.svm, &ata(&vow, &s.mint, &TOKEN)), LOCKED);
 }
@@ -250,7 +298,7 @@ fn a_holder_who_is_not_the_mint_authority_is_marked_so() {
 }
 
 #[test]
-fn second_release_is_refused() {
+fn nothing_more_after_everything_is_out() {
     let mut s = setup(TOKEN_2022);
     let creator = s.creator.insecure_clone();
     let unlock_at = now(&s.svm) + 60;
@@ -258,8 +306,8 @@ fn second_release_is_refused() {
         .expect("create_vow");
     let vow = vow_address(&s.mint, &creator.pubkey(), 7);
     warp_to(&mut s.svm, unlock_at);
-    send(release_ix(&s, &creator.pubkey(), s.creator_tokens, vow), &mut s.svm, &creator)
-        .expect("first release");
+    send(withdraw_ix(&s, &creator.pubkey(), s.creator_tokens, vow, LOCKED, 0), &mut s.svm, &creator)
+        .expect("withdraw everything");
     warp_to(&mut s.svm, unlock_at + 5);
-    assert!(send(release_ix(&s, &creator.pubkey(), s.creator_tokens, vow), &mut s.svm, &creator).is_err());
+    assert!(send(withdraw_ix(&s, &creator.pubkey(), s.creator_tokens, vow, 1, 0), &mut s.svm, &creator).is_err());
 }
