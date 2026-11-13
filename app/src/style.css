@@ -72,4 +72,8 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line
 .msg.ok { background: var(--ok-bg); color: var(--ok); }
 .msg.bad { background: var(--bad-bg); color: var(--bad); }
 .msg.info { background: var(--warn-bg); color: var(--warn); }
+.withdraw { display: flex; gap: 6px; flex-wrap: wrap; }
+.withdraw input { width: 9em; min-height: 36px; }
+.withdraw button { min-height: 36px; padding: 4px 10px; }
+.bad-text { color: var(--bad); }
 footer { font-size: 13px; }

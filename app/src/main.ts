@@ -1,4 +1,4 @@
-// The badge page: check a token's vows, make a vow, release your own, and launch a test token.
+// The badge page: check a token's vows, make a vow, withdraw from your own, and launch a test token.
 // Plain TypeScript and the DOM, no framework, so every line can be read top to bottom.
 
 import { Buffer } from "buffer";
@@ -31,9 +31,13 @@ import {
   createVowInstruction,
   fetchVowsByLocker,
   fetchVowsForMint,
+  freeNow,
   nextNonce,
-  releaseVowInstruction,
+  planWithdraw,
+  remaining,
   sharePercent,
+  vested,
+  withdrawInstruction,
   type Vow,
 } from "./vow.ts";
 
@@ -127,7 +131,7 @@ function explorer(kind: "address" | "tx", id: string): string {
 
 function countdown(unlockAt: number): string {
   const s = unlockAt - nowUnix();
-  if (s <= 0) return "unlockable now";
+  if (s <= 0) return "fully unlocked";
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   return d > 0 ? `${d}d ${h}h left` : h > 0 ? `${h}h ${m}m left` : `${m}m ${s % 60}s left`;
 }
@@ -148,13 +152,14 @@ function parseTokens(text: string, decimals: number): bigint {
 
 // The program's errors, numbered from 6000 in the order they appear in lib.rs.
 const PROGRAM_ERRORS = [
-  "Unlock time must be at least one minute from now",
-  "Unlock time must be within 10 years",
+  "Full unlock must be at least one minute from now",
+  "Full unlock must be within 10 years",
   "Amount must be more than zero",
-  "This vow is still locked",
-  "This vow was already released",
-  "Only the wallet that made the vow can release it",
+  "Everything in this vow has already been taken out",
+  "Only the wallet that made the vow can withdraw from it",
   "This token has a Token-2022 extension that could break the lock",
+  "That is more than is left in this vow",
+  "This withdrawal would burn more than you agreed to",
 ];
 
 function explainError(e: unknown, logs?: string[] | null): string {
@@ -200,20 +205,30 @@ async function check(address: string) {
   }
 }
 
+function pct(part: bigint, whole: bigint): string {
+  return whole === 0n ? "0" : (Number((part * 10_000n) / whole) / 100).toString();
+}
+
 function renderBadge(mint: Mint, program: PublicKey, vows: Vow[]): string {
   const now = nowUnix();
-  const active = vows.filter((v) => v.releasedAt === 0 && v.unlockAt > now);
-  const byCreator = active.filter((v) => v.lockerIsMintAuthority);
-  const lockedNow = active.reduce((n, v) => n + v.amount, 0n);
-  const creatorLocked = byCreator.reduce((n, v) => n + v.amount, 0n);
-  const soonest = active.length ? Math.min(...active.map((v) => v.unlockAt)) : 0;
+  const active = vows.filter((v) => v.releasedAt === 0);
+  // "Still locked" = in a vault and not yet unlocked: taking it out now would burn half.
+  const lockedOf = (v: Vow) => remaining(v) - freeNow(v, now);
+  const lockedNow = active.reduce((n, v) => n + lockedOf(v), 0n);
+  const creatorLocked = active.filter((v) => v.lockerIsMintAuthority).reduce((n, v) => n + lockedOf(v), 0n);
+  const latest = active.length ? Math.max(...active.map((v) => v.unlockAt)) : 0;
+  const burned = vows.reduce((n, v) => n + v.burned, 0n);
+  const creatorBurned = vows.filter((v) => v.lockerIsMintAuthority).reduce((n, v) => n + v.burned, 0n);
 
-  const badge = active.length
+  const badge = lockedNow > 0n
     ? `<div class="badge ok"><div class="big">${sharePercent(lockedNow, mint.supply)}%</div>
-        <div>of supply locked on chain${byCreator.length ? `, ${sharePercent(creatorLocked, mint.supply)}% by the token's creator` : ", none by the token's creator"}.<br/>
-        First unlock ${escape(when(soonest))} (${countdown(soonest)}).</div></div>`
+        <div>of supply is vowed and still locked${creatorLocked > 0n ? `, ${sharePercent(creatorLocked, mint.supply)}% by the token's creator` : ", none by the token's creator"}.<br/>
+        It unlocks gradually until ${escape(when(latest))}. Taking any out early burns half of it.</div></div>`
     : `<div class="badge none"><div class="big">No vow</div>
         <div>Nothing on this token is locked by the vow program right now.</div></div>`;
+  const burnFlag = burned > 0n
+    ? `<div class="msg bad">${creatorBurned > 0n ? "The creator" : "A holder"} pulled tokens out early: <b>${formatTokens(burned, mint.decimals)}</b> burned as the penalty.</div>`
+    : "";
 
   const minting = mint.mintAuthority
     ? `<span class="flag warn">still possible</span> (authority ${short(mint.mintAuthority)}): more tokens can be made, which would shrink every share`
@@ -224,22 +239,25 @@ function renderBadge(mint: Mint, program: PublicKey, vows: Vow[]): string {
 
   const rows = vows
     .map((v) => {
-      const status = v.releasedAt ? `released ${escape(when(v.releasedAt))}` : v.unlockAt > now ? `locked · ${countdown(v.unlockAt)}` : "unlockable";
+      const unlocked = vested(v.amount, v.createdAt, v.unlockAt, now);
+      const status = v.releasedAt ? `all out ${escape(when(v.releasedAt))}` : countdown(v.unlockAt);
       return `<tr><td><a href="${explorer("address", v.address.toBase58())}" target="_blank" rel="noopener">${short(v.address)}</a></td>
         <td>${formatTokens(v.amount, mint.decimals)} (${sharePercent(v.amount, v.supplyAtLock)}%)</td>
-        <td>${escape(when(v.unlockAt))}</td><td>${status}</td>
+        <td>${escape(when(v.createdAt))} → ${escape(when(v.unlockAt))}<br/><span class="muted">${pct(unlocked, v.amount)}% unlocked · ${status}</span></td>
+        <td>${formatTokens(v.withdrawn, mint.decimals)}</td>
+        <td>${v.burned > 0n ? `<b>${formatTokens(v.burned, mint.decimals)}</b>` : "0"}</td>
         <td>${v.lockerIsMintAuthority ? "creator (mint authority)" : "another holder"}</td></tr>`;
     })
     .join("");
 
-  return `${badge}
+  return `${badge}${burnFlag}
     <dl class="facts">
       <dt>Supply</dt><dd>${formatTokens(mint.supply, mint.decimals)}</dd>
       <dt>Minting</dt><dd>${minting}</dd>
       <dt>Freezing</dt><dd>${freezing}</dd>
       <dt>Token program</dt><dd>${program.equals(TOKEN_2022_PROGRAM_ID) ? "Token-2022" : "SPL Token"}</dd>
     </dl>
-    ${vows.length ? `<div class="table-wrap"><table><thead><tr><th>Vow</th><th>Locked</th><th>Unlocks</th><th>Status</th><th>Locked by</th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}`;
+    ${vows.length ? `<div class="table-wrap"><table><thead><tr><th>Vow</th><th>Vowed</th><th>Unlocks</th><th>Taken out</th><th>Burned</th><th>By</th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}`;
 }
 
 // ---------- make a vow ----------
@@ -282,7 +300,7 @@ $("make-form").addEventListener("submit", async (e) => {
         unlockAt,
       }),
     ]);
-    message(out, "ok", `Locked. <a href="${explorer("tx", sig)}" target="_blank" rel="noopener">View transaction</a>`);
+    message(out, "ok", `Vowed. <a href="${explorer("tx", sig)}" target="_blank" rel="noopener">View transaction</a>`);
     $<HTMLInputElement>("check-mint").value = mint.toBase58();
     await check(mint.toBase58());
     await refreshWallet();
@@ -295,9 +313,27 @@ $("make-form").addEventListener("submit", async (e) => {
 
 // ---------- my vows ----------
 
+const decimalsCache = new Map<string, { decimals: number; program: PublicKey }>();
+async function mintFacts(mint: PublicKey) {
+  const key = clusterSelect.value + mint.toBase58();
+  let facts = decimalsCache.get(key);
+  if (!facts) {
+    const program = await tokenProgramOf(mint);
+    const info = await getMint(connection, mint, "confirmed", program);
+    facts = { decimals: info.decimals, program };
+    decimalsCache.set(key, facts);
+  }
+  return facts;
+}
+
+// Inputs the person is typing in survive the 30-second refresh.
+const typed = new Map<string, string>();
+let mineVows: Vow[] = [];
+
 async function renderMine() {
   const out = $("mine-result");
   if (!wallet) return;
+  if (out.contains(document.activeElement)) return; // don't redraw under someone typing
   try {
     const vows = await fetchVowsByLocker(connection, wallet);
     if (!vows.length) {
@@ -305,57 +341,84 @@ async function renderMine() {
       return;
     }
     const now = nowUnix();
+    const facts = await Promise.all(vows.map((v) => mintFacts(v.mint)));
+    mineVows = vows;
     out.classList.remove("muted");
-    out.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Token</th><th>Amount (base units)</th><th>Unlocks</th><th></th></tr></thead><tbody>${vows
+    out.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Token</th><th>Left in vow</th><th>Free now</th><th>Fully unlocked</th><th>Withdraw</th></tr></thead><tbody>${vows
       .map((v, i) => {
+        const d = facts[i].decimals;
+        const key = v.address.toBase58();
         const action = v.releasedAt
-          ? `released`
-          : v.unlockAt > now
-            ? `<button class="secondary" data-try="${i}">Try to withdraw now</button>`
-            : `<button data-release="${i}">Release</button>`;
-        return `<tr><td><code>${short(v.mint)}</code></td><td>${v.amount.toLocaleString()}</td>
+          ? `all taken out`
+          : `<div class="withdraw"><input data-amount="${i}" inputmode="decimal" value="${escape(typed.get(key) ?? formatTokens(freeNow(v, now), d).replace(/,/g, ""))}" />
+             <button data-withdraw="${i}">Withdraw</button>
+             <button class="secondary" data-all="${i}" title="Fill in everything left">All</button></div>
+             <div class="muted" data-quote="${i}"></div>`;
+        return `<tr><td><code>${short(v.mint)}</code></td><td>${formatTokens(remaining(v), d)}</td><td>${formatTokens(freeNow(v, now), d)}</td>
           <td>${escape(when(v.unlockAt))}<br/><span class="muted">${v.releasedAt ? "" : countdown(v.unlockAt)}</span></td><td>${action}</td></tr>`;
       })
       .join("")}</tbody></table></div><div id="mine-msg"></div>`;
-    out.querySelectorAll<HTMLButtonElement>("[data-release]").forEach((b) =>
-      b.addEventListener("click", () => void release(vows[Number(b.dataset.release)], false)),
-    );
-    out.querySelectorAll<HTMLButtonElement>("[data-try]").forEach((b) =>
-      b.addEventListener("click", () => void release(vows[Number(b.dataset.try)], true)),
+    vows.forEach((v, i) => {
+      const input = out.querySelector<HTMLInputElement>(`[data-amount="${i}"]`);
+      if (!input) return;
+      const update = () => {
+        typed.set(v.address.toBase58(), input.value);
+        out.querySelector<HTMLElement>(`[data-quote="${i}"]`)!.innerHTML = quote(v, facts[i].decimals, input.value);
+      };
+      input.addEventListener("input", update);
+      out.querySelector(`[data-all="${i}"]`)!.addEventListener("click", () => {
+        input.value = formatTokens(remaining(v), facts[i].decimals).replace(/,/g, "");
+        update();
+      });
+      update();
+    });
+    out.querySelectorAll<HTMLButtonElement>("[data-withdraw]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const i = Number(b.dataset.withdraw);
+        void withdraw(mineVows[i], out.querySelector<HTMLInputElement>(`[data-amount="${i}"]`)!.value);
+      }),
     );
   } catch (err) {
     message(out, "bad", escape(explainError(err)));
   }
 }
 
-/** Release a vow. With `dryRun`, ask the network to simulate it instead: the demo of the program
- * refusing an early withdrawal, without spending a fee or bothering Phantom. */
-async function release(vow: Vow, dryRun: boolean) {
+/** What a withdrawal would do right now, in words. */
+function quote(v: Vow, decimals: number, text: string): string {
+  try {
+    const amount = parseTokens(text, decimals);
+    if (amount <= 0n) return "";
+    if (amount > remaining(v)) return `<span class="bad-text">More than is left in this vow.</span>`;
+    const p = planWithdraw(v, nowUnix(), amount);
+    if (p.burn === 0n) return `You get all ${formatTokens(amount, decimals)}: it has unlocked.`;
+    return `<span class="bad-text">${formatTokens(p.early, decimals)} of this is early: <b>${formatTokens(p.burn, decimals)} will be burned</b>, you get ${formatTokens(p.toLocker, decimals)}.</span>`;
+  } catch {
+    return "";
+  }
+}
+
+/** Withdraw from a vow. The burn the person saw in the quote is the most the program may burn
+ * (`max_burn`); unlocking only continues, so by the time it lands the burn can only be smaller. */
+async function withdraw(vow: Vow, text: string) {
   const out = $("mine-msg");
   try {
     if (!wallet) throw new Error("Connect Phantom first");
-    const program = await tokenProgramOf(vow.mint);
-    const ix = releaseVowInstruction({
-      vow,
-      lockerTokens: getAssociatedTokenAddressSync(vow.mint, wallet, false, program),
-      tokenProgram: program,
-    });
-    if (dryRun) {
-      const tx = new Transaction().add(ix);
-      tx.feePayer = wallet;
-      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-      const sim = await connection.simulateTransaction(tx);
-      if (sim.value.err) {
-        message(out, "bad", `Refused by the program: <b>${escape(explainError(sim.value.err, sim.value.logs))}</b>. Unlocks ${escape(when(vow.unlockAt))}.`);
-      } else {
-        message(out, "ok", "The program would allow it: the vow has unlocked. Press Release.");
-      }
-      return;
-    }
+    const { decimals, program } = await mintFacts(vow.mint);
+    const amount = parseTokens(text, decimals);
+    const plan = planWithdraw(vow, nowUnix(), amount);
+    if (plan.burn > 0n && !confirm(`Withdrawing early burns ${formatTokens(plan.burn, decimals)} tokens for good. You get ${formatTokens(plan.toLocker, decimals)}. Go ahead?`)) return;
     message(out, "info", "Approve the transaction in Phantom…");
-    const sig = await send([ix]);
-    message(out, "ok", `Released. <a href="${explorer("tx", sig)}" target="_blank" rel="noopener">View transaction</a>`);
+    const lockerTokens = getAssociatedTokenAddressSync(vow.mint, wallet, false, program);
+    const sig = await send([
+      // The locker's token account may have been closed since the vow; recreate it if so.
+      createAssociatedTokenAccountIdempotentInstruction(wallet, lockerTokens, wallet, vow.mint, program),
+      withdrawInstruction({ vow, lockerTokens, tokenProgram: program, amount, maxBurn: plan.burn }),
+    ]);
+    typed.delete(vow.address.toBase58());
+    message(out, "ok", `${plan.burn > 0n ? `Withdrawn, and ${formatTokens(plan.burn, decimals)} burned.` : "Withdrawn."} <a href="${explorer("tx", sig)}" target="_blank" rel="noopener">View transaction</a>`);
     await refreshWallet();
+    const checked = $<HTMLInputElement>("check-mint").value.trim();
+    if (checked === vow.mint.toBase58()) await check(checked);
   } catch (err) {
     message(out, "bad", escape(explainError(err, (err as { logs?: string[] }).logs)));
   }

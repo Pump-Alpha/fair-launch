@@ -7,12 +7,15 @@ import { createHash } from "node:crypto";
 import { PublicKey } from "@solana/web3.js";
 import {
   DISC_CREATE_VOW,
-  DISC_RELEASE_VOW,
+  DISC_WITHDRAW,
   DISC_VOW_ACCOUNT,
   VOW_ACCOUNT_SIZE,
   bs58,
   createVowData,
   decodeVow,
+  planWithdraw,
+  vested,
+  withdrawData,
   sharePercent,
   vowAddress,
 } from "./vow.ts";
@@ -21,7 +24,7 @@ const first8 = (s: string) => Uint8Array.from(createHash("sha256").update(s).dig
 
 test("discriminators are Anchor's sha256 prefixes", () => {
   assert.deepEqual(DISC_CREATE_VOW, first8("global:create_vow"));
-  assert.deepEqual(DISC_RELEASE_VOW, first8("global:release_vow"));
+  assert.deepEqual(DISC_WITHDRAW, first8("global:withdraw"));
   assert.deepEqual(DISC_VOW_ACCOUNT, first8("account:Vow"));
 });
 
@@ -53,8 +56,11 @@ test("decodeVow reads the account layout", () => {
   v.setBigInt64(96, 10n, true);
   v.setBigInt64(104, 20n, true);
   v.setBigInt64(112, 0n, true);
-  data[120] = 1;
-  data[121] = 254;
+  v.setBigUint64(120, 7n, true);
+  v.setBigUint64(128, 5n, true);
+  v.setUint16(136, 5000, true);
+  data[138] = 1;
+  data[139] = 254;
   const addr = new PublicKey(new Uint8Array(32).fill(9));
   const vow = decodeVow(addr, data)!;
   assert.equal(vow.mint.toBase58(), new PublicKey(new Uint8Array(32).fill(1)).toBase58());
@@ -64,10 +70,35 @@ test("decodeVow reads the account layout", () => {
   assert.equal(vow.supplyAtLock, 1000n);
   assert.equal(vow.unlockAt, 20);
   assert.equal(vow.releasedAt, 0);
+  assert.equal(vow.withdrawn, 7n);
+  assert.equal(vow.burned, 5n);
+  assert.equal(vow.penaltyBps, 5000);
   assert.equal(vow.lockerIsMintAuthority, true);
   assert.equal(vow.bump, 254);
   data[0] ^= 1;
   assert.equal(decodeVow(addr, data), null, "wrong discriminator is not a vow");
+});
+
+test("withdraw data is discriminator + amount + max_burn", () => {
+  const data = withdrawData(500n, 250n);
+  assert.equal(data.length, 24);
+  const v = new DataView(data.buffer);
+  assert.equal(v.getBigUint64(8, true), 500n);
+  assert.equal(v.getBigUint64(16, true), 250n);
+});
+
+test("vesting and the early-exit split match the program's unit tests", () => {
+  const NOW = 1_800_000_000;
+  assert.equal(vested(1000n, NOW, NOW + 1000, NOW + 250), 250n);
+  assert.equal(vested(10n, NOW, NOW + 3, NOW + 1), 3n);
+  assert.equal(vested(1000n, NOW, NOW + 1000, NOW + 5000), 1000n);
+  const vow = { amount: 1000n, createdAt: NOW, unlockAt: NOW + 1000, withdrawn: 0n, burned: 0n, penaltyBps: 5000 } as never;
+  assert.deepEqual(planWithdraw(vow, NOW + 300, 300n), { toLocker: 300n, burn: 0n, early: 0n });
+  assert.deepEqual(planWithdraw(vow, NOW + 300, 500n), { toLocker: 400n, burn: 100n, early: 200n });
+  assert.deepEqual(planWithdraw(vow, NOW, 3n), { toLocker: 1n, burn: 2n, early: 3n });
+  const after = { amount: 1000n, createdAt: NOW, unlockAt: NOW + 1000, withdrawn: 400n, burned: 100n, penaltyBps: 5000 } as never;
+  assert.deepEqual(planWithdraw(after, NOW + 500, 100n), { toLocker: 50n, burn: 50n, early: 100n });
+  assert.deepEqual(planWithdraw(after, NOW + 700, 200n), { toLocker: 200n, burn: 0n, early: 0n });
 });
 
 test("share of supply matches the program's rounding", () => {
